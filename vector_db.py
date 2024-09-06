@@ -26,6 +26,7 @@ if not client.collection_exists(collection_name):
 # Load MNIST dataset
 (train_images, train_labels), (test_images, test_labels) = keras.datasets.mnist.load_data()
 
+
 # Preprocess images: Normalize and ensure correct shape
 def preprocess_images(imgs):
     # Normalize images to the range [0, 1] and ensure single-channel format
@@ -34,6 +35,7 @@ def preprocess_images(imgs):
         imgs = np.expand_dims(imgs, axis=-1)  # Add the channel dimension: (N, 28, 28, 1)
     return imgs
 
+
 # Apply preprocessing to training images
 train_images = preprocess_images(train_images)
 
@@ -41,12 +43,13 @@ train_images = preprocess_images(train_images)
 processor = AutoImageProcessor.from_pretrained(
     "microsoft/resnet-50",
     image_mean=[0.485, 0.456, 0.406],  # Standard mean values for RGB images
-    image_std=[0.229, 0.224, 0.225],   # Standard std values for RGB images
+    image_std=[0.229, 0.224, 0.225],  # Standard std values for RGB images
 )
 
 # Use ResNetModel to access feature embeddings
 model = ResNetModel.from_pretrained("microsoft/resnet-50")
 model.eval()  # Set the model to evaluation mode
+
 
 # Function to extract embeddings
 def get_image_embedding(image):
@@ -59,6 +62,7 @@ def get_image_embedding(image):
     embeddings = outputs.pooler_output.numpy().flatten()
     return embeddings
 
+
 # Function to convert an image to a base64 string
 def encode_image_to_base64(image):
     pil_image = Image.fromarray((image * 255).astype(np.uint8).reshape(28, 28))
@@ -67,11 +71,13 @@ def encode_image_to_base64(image):
     img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
     return img_str
 
+
 # Prepare points to insert into Qdrant
 points = []
 
 # Loop through all training images and extract embeddings
-for idx, (image, label) in tqdm(enumerate(zip(train_images, train_labels)), total=len(train_images), desc="Processing MNIST images"):
+for idx, (image, label) in tqdm(enumerate(zip(train_images, train_labels)), total=len(train_images),
+                                desc="Processing MNIST images"):
     embedding = get_image_embedding(image)
     img_base64 = encode_image_to_base64(image)  # Encode the image to base64
 
