@@ -106,3 +106,7 @@ if points:
     )
 
 print(f"Inserted all {len(train_images)} training images into Qdrant collection '{collection_name}'.")
+
+
+# for audio embedding and music recommendation system
+# https://www.e2enetworks.com/blog/audio-driven-search-leveraging-vector-databases-for-audio-information-retrieval

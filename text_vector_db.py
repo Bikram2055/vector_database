@@ -1,49 +1,91 @@
-from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, PointStruct, Distance
-import tensorflow as tf
-from tensorflow import keras
-# from transformers import AutoImageProcessor, ResNetModel
-from transformers import AutoTokenizer, DPRContextEncoder
-import numpy as np
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from transformers import BertTokenizer, BertModel, AdamW
+from datasets import load_dataset
 
-# Connect to Qdrant
-client = QdrantClient(host="localhost", port=6333)
 
-# Create the collection if it doesn't exist
-collection_name = "my_text_collection1"
-vector_size = 768  # Adjust this size to match the actual size of the embeddings from embedding_model
-if not client.collection_exists(collection_name):
-    client.create_collection(
-        collection_name=collection_name,
-        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-    )
+# Define Transformer Model with BERT backbone
+class SimpleTransformer(nn.Module):
+    def __init__(self, d_model=768, nhead=8, num_layers=6):
+        super(SimpleTransformer, self).__init__()
+        self.encoder = BertModel.from_pretrained('bert-base-uncased')
+        self.transformer = nn.Transformer(d_model=d_model, nhead=nhead, num_encoder_layers=num_layers,
+                                          num_decoder_layers=num_layers)
+        self.fc_out = nn.Linear(d_model, self.encoder.config.vocab_size)
 
-tokenizer = AutoTokenizer.from_pretrained('facebook/dpr-ctx_encoder-single-nq-base')
-context_encoder = DPRContextEncoder.from_pretrained('facebook/dpr-ctx_encoder-single-nq-base')
+    def forward(self, src, tgt):
+        src_enc = self.encoder(src).last_hidden_state
+        tgt_emb = self.encoder.embeddings(tgt)
+        output = self.transformer(src_enc, tgt_emb)
+        return self.fc_out(output)
 
-# Example chunk of text
-chunk = "Climate change affects marine life by disrupting ecosystems and altering habitats."
 
-inputs = tokenizer(chunk, return_tensors='pt')
-chunk_embedding = context_encoder(**inputs).pooler_output.detach().numpy()[0]  # Convert to NumPy array
+# Tokenization function
+def tokenize_function(examples, tokenizer):
+    src = tokenizer(examples['translation']['en'], padding="max_length", truncation=True, return_tensors="pt")[
+        'input_ids']
+    tgt = tokenizer(examples['translation']['it'], padding="max_length", truncation=True, return_tensors="pt")[
+        'input_ids']
+    return {'src': src[0], 'tgt': tgt[0]}  # Extract tensors from the lists
 
-# Metadata including the actual text chunk
-metadata = {
-    "id": 1,  # Unique identifier for the chunk
-    "source": "Environmental Article",  # Example metadata
-    "date": "2023-09-06",
-    "text": chunk  # Include the actual text chunk in the metadata
-}
 
-# Prepare the data point with the vector and metadata
-point = PointStruct(
-    id=metadata["id"],  # Unique ID for the chunk
-    vector=chunk_embedding.tolist(),  # Convert NumPy array to list
-    payload=metadata  # Add metadata with the actual text chunk included
-)
+# Custom collate function to pad and batch data properly
+def collate_fn(batch):
+    src = torch.stack([item['src'] for item in batch])
+    tgt = torch.stack([item['tgt'] for item in batch])
+    return {'src': src, 'tgt': tgt}
 
-# Insert the vector with metadata into the collection
-client.upsert(collection_name=collection_name, points=[point])
 
-print("Vector and metadata, including the text chunk, have been successfully added to the Qdrant database.")
+# Load Dataset and Tokenizer
+def load_data():
+    dataset = load_dataset('opus_books', 'en-it')
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+    # Split the dataset into train and validation sets
+    dataset = dataset['train'].train_test_split(test_size=0.1)
+
+    # Apply tokenization
+    train_ds = dataset['train'].map(lambda x: tokenize_function(x, tokenizer),
+                                    remove_columns=dataset['train'].column_names)
+    val_ds = dataset['test'].map(lambda x: tokenize_function(x, tokenizer), remove_columns=dataset['test'].column_names)
+
+    # Create DataLoaders with custom collate function
+    train_loader = DataLoader(train_ds, batch_size=8, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=8, shuffle=False, collate_fn=collate_fn)
+
+    return train_loader, val_loader, tokenizer
+
+
+# Train the Transformer
+def train_model():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = SimpleTransformer().to(device)
+    train_loader, val_loader, tokenizer = load_data()
+    optimizer = AdamW(model.parameters(), lr=1e-4)
+    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+
+    for epoch in range(5):  # Number of epochs
+        model.train()
+        for batch in train_loader:
+            src, tgt = batch['src'].to(device), batch['tgt'].to(device)
+            optimizer.zero_grad()
+            output = model(src, tgt[:, :-1])
+            loss = loss_fn(output.view(-1, output.size(-1)), tgt[:, 1:].contiguous().view(-1))
+            loss.backward()
+            optimizer.step()
+
+        # Validation step
+        model.eval()
+        with torch.no_grad():
+            val_loss = 0
+            for batch in val_loader:
+                src, tgt = batch['src'].to(device), batch['tgt'].to(device)
+                output = model(src, tgt[:, :-1])
+                loss = loss_fn(output.view(-1, output.size(-1)), tgt[:, 1:].contiguous().view(-1))
+                val_loss += loss.item()
+            print(f"Validation Loss: {val_loss / len(val_loader):.4f}")
+
+
+if __name__ == "__main__":
+    train_model()
